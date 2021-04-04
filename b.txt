@@ -1,1 +1,73 @@
-123466dewfd
+// BomSearchDlg.cpp : 実装ファイル
+//
+#include "stdafx.h"
+#include "bomCRUD.h"
+#include "BomSearchDlg.h"
+// CBomSearchDlg ダイアログ
+
+IMPLEMENT_DYNAMIC(CBomSearchDlg, CBomDlg)
+
+CBomSearchDlg::CBomSearchDlg(LPCWSTR connect, bool multi_selection, CWnd* pParent /*=nullptr*/) : CBomDlg(IDD_DLG_BOM_SEARCH)
+{
+	m_multiSel = multi_selection;
+}
+
+CBomSearchDlg::~CBomSearchDlg()
+{
+}
+
+void CBomSearchDlg::DoDataExchange(CDataExchange* pDX)
+{
+	CBomDlg::DoDataExchange(pDX);
+}
+
+
+BEGIN_MESSAGE_MAP(CBomSearchDlg, CBomDlg)
+	ON_MESSAGE(SSM_CLICK, OnClickSpread)
+END_MESSAGE_MAP()
+
+BOOL CBomSearchDlg::OnInitDialog()
+{
+	CBomDlg::OnInitDialog();
+    init_resize();
+	initSpr();
+	initPage();
+	setLockSpread(&m_sprSearchResult);
+	setLockSpread(&m_sprAttr);
+	for (auto i = 0; i < m_relateInfor_pages.size(); i++) {
+		setLockSpread(m_relateInfor_pages[i]->getSpreadSheet());
+	}
+	setMultiSel(&m_sprSearchResult);
+	return TRUE;
+}
+
+void CBomSearchDlg::OnOK()
+{
+	CBomDlg::OnOK();
+}
+
+void CBomSearchDlg::OnCancel()
+{
+	CBomDlg::OnCancel();
+}
+
+void CBomSearchDlg::setLockSpread(DenkiSpreadSheet* spr, bool propvar)
+{
+	spr->SetCol(-1);
+	spr->SetRow(-1);
+	spr->SetLock(propvar);
+}
+void CBomSearchDlg::setMultiSel(DenkiSpreadSheet* spr)
+{
+	if(!m_multiSel)
+		spr->SetOperationMode(SS_OPMODE_SINGLESEL);
+}
+LRESULT CBomSearchDlg::OnClickSpread(WPARAM wParam, LPARAM lParam)
+{
+	updateSelectedRowHilight();
+	if (wParam == IDC_SPR_LIST_FIND) {
+		setupInforPageFromResultSpr();
+		reflectSprResultToAttr();
+	}
+	return 0L;
+}
