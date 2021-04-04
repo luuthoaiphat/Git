@@ -2,7 +2,7 @@
 #include "BomDlg.h"
 #include "DataSearch.h"
 #include "CondList.h"
-#include "common.h"
+#include "common.h"dww
 
 #define INITIAL_ROW_CAPACITY (250)
 #define INITIAL_COND_USE (10)
