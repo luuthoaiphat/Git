@@ -7,7 +7,7 @@
 #define INITIAL_ROW_CAPACITY (250)
 #define INITIAL_COND_USE (10)
 #define STR_OPTION		(L"ƒIƒvƒVƒ‡ƒ“")
-#define STR_CONDITION	(L"ğŒ")
+#define STR_CONDITION	(L"ğŒ")3ewrfw
 #define STR_ITEM		(L"€–Ú")
 
 using namespace std;
