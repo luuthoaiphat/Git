@@ -1,1 +1,752 @@
-123466dewfd
+#include "stdafx.h"
+#include "BomDlg.h"
+#include "DataSearch.h"
+#include "CondList.h"
+#include "common.h"
+
+#define INITIAL_ROW_CAPACITY (250)
+#define INITIAL_COND_USE (10)
+#define STR_OPTION		(L"オプション")
+#define STR_CONDITION	(L"条件")
+#define STR_ITEM		(L"項目")
+
+using namespace std;
+struct TABPAGE_CREATE { CRelateInfoPageDlg *pDlg; LPCTSTR tabName; UINT pageID;};
+
+std::vector<optionMode> optionModeInf = 
+{
+	{ L"を含むもの",CondType::STR_INCL},
+	{ L"で始まるもの", CondType::STR_START_WITH },
+	{ L"で終わるもの", CondType::STR_END_WITH},
+	{ L"に一致するもの", CondType::STR_MATCH},
+	{ L"を含まないもの", CondType::STR_NOT_INCL},
+	{ L"が値を持つ",CondType::STR_NOT_EMPTY},
+	{ L"が値を持たない", CondType::STR_EMPTY},
+};
+
+IMPLEMENT_DYNAMIC(CBomDlg, CDialog)
+
+CBomDlg::CBomDlg(int IDD, CWnd* pParent) : CDialog(IDD), CWindowResize(this,TRUE)
+{
+	if (IDD == IDD_DLG_BOM_SEARCH) {
+		m_typeDlg = TypeDlg::Search;
+	}
+	else if (IDD == IDD_DLG_BOM_EDIT) {
+		m_typeDlg = TypeDlg::Edit;
+	}
+	m_code_index = -1;
+	m_type_index = -1;
+}
+
+CBomDlg::~CBomDlg()
+{
+	if (m_db) {
+        m_db->Close();
+    }
+}
+
+void CBomDlg::DoDataExchange(CDataExchange* pDX)
+{
+	CDialog::DoDataExchange(pDX);
+}
+
+
+BEGIN_MESSAGE_MAP(CBomDlg, CDialog)
+	ON_WM_PAINT()
+	ON_WM_SIZE()
+    ON_WM_GETMINMAXINFO()
+    ON_WM_NCHITTEST()
+	ON_MESSAGE((WM_USER + 0x6d01), OnAcadKeepFocus)   // For focus on modeless dialog.
+	ON_NOTIFY(TCN_SELCHANGE, IDC_TAB_KANRENJOUHOU, OnSelChgTab)
+	ON_BN_CLICKED(IDC_BUTTON_FIND, OnBtnFind)
+	ON_BN_CLICKED(IDC_BUTTON_FIND_ADDLINE, OnBtnFindAddLine)
+	ON_BN_CLICKED(IDC_BUTTON_DELETE_LINE, OnBtnDeleteRows)
+	ON_BN_CLICKED(IDC_BUTTON_EXPAND_MISC, OnBtnExpandMisc)
+	ON_BN_CLICKED(IDC_BUTTON_EXPAND_ATTR, OnBtnExpandAttr)
+	ON_BN_CLICKED(IDC_BUTTON_PREVIEW_LEFT, OnBtnPreviewLeft)
+	ON_BN_CLICKED(IDC_BUTTON_PREVIEW_RIGHT, OnBtnPreviewRight)
+	ON_MESSAGE(SSM_COMBOSELCHANGE, OnComboSelChangeSpread)
+	ON_MESSAGE(SSM_COMBODROPDOWN, OnComboClickSpread)
+	ON_MESSAGE(SSM_KEYDOWN, OnKeyDownSpread)
+	ON_CONTROL(SSN_BLOCKCHANGED, IDC_SPR_LIST_FIND, OnSelChangeSpread)
+END_MESSAGE_MAP()
+
+// CBomDlg メッセージ ハンドラー
+LRESULT CBomDlg::OnAcadKeepFocus(WPARAM, LPARAM)
+{
+	CRect	cr;
+	GetWindowRect(&cr);
+	CPoint	cp;
+	GetCursorPos(&cp);
+	if (cr.PtInRect(cp))
+		return TRUE;
+	return	FALSE;
+}
+
+bool CBomDlg::setSearchLimit(UINT limit)
+{
+	m_limit = limit;
+	return true;
+}
+
+bool CBomDlg::setExpandedPanel(bool expandAttrPanel, bool expandMiscPanel)
+{
+	m_expandAttrPanel = expandAttrPanel;
+	m_expandMiscPanel = expandMiscPanel;
+	return true;
+}
+
+void CBomDlg::setupSprAttr(DenkiSpreadSheet *spr)
+{
+	spr->CreateOnPlaceholder(this, IDC_SPR_BUHINJOUHOU);
+	spr->SetScrollBars(2);	//垂直方向のみ
+
+	spr->SetMaxCols(1);
+	spr->SetColWidth(0, 10);
+	spr->SetColWidth(1, 9);
+	spr->SetCellText(0, 0,_T("属性"));
+	spr->SetCellText(1, 0, _T("値"));
+
+	m_sprAttr.SetMaxRows(m_sprSearchResult.GetMaxCols() - 1);
+	for (auto col = 1; col < m_sprSearchResult.GetMaxCols(); col++)
+	{
+		m_sprAttr.SetCellText(0, col, m_sprSearchResult.GetCellText(col, 0));
+		SS_CELLTYPE cellType;
+		if (m_sprSearchResult.GetCellType(col, -1, &cellType))
+		{
+			if (cellType.Type == SS_TYPE_INTEGER) {
+				setRowType_INT(spr, col);
+			}
+			else if (cellType.Type == SS_TYPE_FLOAT) {
+				setRowType_DOUBLE(spr, col);
+			}
+		}
+	}
+}
+
+void CBomDlg::setupSearchCondSpr()
+{
+	m_sprSearchCond.CreateOnPlaceholder(this, IDC_SPR_FIND);
+	m_sprSearchCond.SetMaxCols(4);
+	m_sprSearchCond.SetMaxRows(0);
+	LPCTSTR header[] = { _T("-"),
+						STR_ITEM,
+						STR_CONDITION,
+						STR_OPTION, };
+	for (auto i = 0; i < ARRAY_SIZE(header); i++)
+	{
+		m_sprSearchCond.SetCellText(i + 1, 0, header[i]);
+	}
+	long nWidth, nHeight;
+	CDC* pDc = GetDC();
+	double dblPixel = 1440.0 / (double)pDc->GetDeviceCaps(LOGPIXELSX);
+	ReleaseDC(pDc);
+	long nUnitType = m_sprSearchCond.GetUnitType();
+	m_sprSearchCond.SetUnitType(2);
+	m_sprSearchCond.GetClientArea(&nWidth, &nHeight);
+	double	dHei = m_sprSearchCond.GetRowHeight(0);
+	m_sprSearchCond.SetColWidth(0, dHei + 10);
+	m_sprSearchCond.SetColWidth(1, dHei + 10);
+	m_sprSearchCond.SetColWidth(2, (nWidth - dHei * 3) / 3);
+	m_sprSearchCond.SetColWidth(3, (nWidth - dHei * 3) / 3);
+	m_sprSearchCond.SetColWidth(4, (nWidth - dHei * 3) / 3 + (dHei / 2));
+	m_sprSearchCond.SetUnitType(static_cast<WORD>(nUnitType));
+	//type
+	m_sprSearchCond.SetCol(1);
+	m_sprSearchCond.SetTypeCheckBox(FALSE, SSS_ALIGN_CENTER | SSS_ALIGN_VCENTER);
+	m_sprSearchCond.SetCol(2);
+	m_sprSearchCond.SetTypeComboBox(_T(""));
+	m_sprSearchCond.SetCol(3);
+	m_sprSearchCond.SetTypeComboBoxEd(_T(""), SSS_ALIGN_TOP | SSS_ALIGN_LEFT, 10, 256);
+	m_sprSearchCond.SetCol(4);
+	m_sprSearchCond.SetTypeComboBox(_T(""));
+	/// TODO: implement later
+}
+
+void CBomDlg::setupSearchResultSpr(
+	const vector<unique_ptr<ColumnInfo>>& colorder,
+	const map<wstring, const ColumnInfo*>& colinf)
+{
+	m_sprSearchResult.CreateOnPlaceholder(this, IDC_SPR_LIST_FIND);
+	m_sprSearchResult.SetMaxCols(static_cast<SS_COORD>(colorder.size()));
+	m_sprSearchResult.SetMaxRows(0);
+	for (auto& c : colorder) {
+		c->setupHeaderCell(m_sprSearchResult);
+		c->setupSpreadColumn(m_sprSearchResult);
+		c->setColumnType(m_sprSearchResult);
+	}
+	auto it = m_colinf.find(CODE_HEADER);
+	if (it != m_colinf.end())
+		m_code_index = it->second->getColumnIndex();
+	it = m_colinf.find(TYPE_HEADER);
+	if (it != m_colinf.end())
+		m_type_index = it->second->getColumnIndex();
+	/// TODO: implement later
+};
+
+void CBomDlg::setupDefaultSearchResultSpr()
+{
+	for (auto &c: m_colorder) {
+        c->setupHeaderCell(m_sprSearchResult);
+        c->resetSpreadColumnColor(m_sprSearchResult);
+	}
+}
+
+void CBomDlg::setupInforPageFromResultSpr()
+{
+	SS_CELLCOORD CellActive;
+	m_sprSearchResult.GetActiveCell(&CellActive.Col, &CellActive.Row);
+	setupInforPageFromResultSpr(CellActive.Row);
+}
+
+void CBomDlg::setupInforPageFromResultSpr(int row)
+{
+	m_sprSearchResult.SetCol(m_code_index);
+	m_sprSearchResult.SetRow(row);
+	std::wstring code(m_sprSearchResult.GetText());
+	//type
+	m_sprSearchResult.SetCol(m_type_index);
+	m_sprSearchResult.SetRow(row);
+	std::wstring type(m_sprSearchResult.GetText());
+
+	auto inforPage1 = m_relateInfor_pages[m_page_index].get();
+	inforPage1->setCode(code);
+	inforPage1->setType(type);
+	inforPage1->displayRelateInfor();
+}
+void CBomDlg::setDataRowSearchCondSpr(int row)
+{
+	m_sprSearchCond.SetCol(1);
+	m_sprSearchCond.SetRow(row);
+	m_sprSearchCond.SetText(_T("1"));
+
+    // TODO: move...
+    auto colorder = transform<ColumnInfo*>(m_colorder,
+            [](auto &ptr){ return ptr.get(); });
+    auto tgts = copy_if(colorder,
+            [](auto &inf){ return inf->canBeCondColumnCandidate(); });
+    auto tgt_hdrs = transform<wstring>(tgts,
+            [](auto &inf){ return inf->getDisplayName(); });
+    auto lstString = join(tgt_hdrs,L"\t");
+
+	m_sprSearchCond.SetCol(2);
+	m_sprSearchCond.SetRow(row);
+	m_sprSearchCond.SetComboBoxListString(2, row, lstString.c_str());
+	m_sprSearchCond.SetTypeComboBoxCurSel(0);
+	//
+	auto hdrs = transform<wstring>(optionModeInf,
+		[](auto& inf) { return inf.m_text_type;});
+	lstString = join(hdrs, L"\t");
+	m_sprSearchCond.SetCol(4);
+	m_sprSearchCond.SetRow(row);
+	m_sprSearchCond.SetComboBoxListString(4, row, lstString.c_str());
+	m_sprSearchCond.SetTypeComboBoxCurSel(0);
+}
+
+void CBomDlg::setConditons()
+{
+	for (auto row = 1; row <= m_sprSearchCond.GetMaxRows(); row++) {
+		std::wstring value(m_sprSearchCond.GetCellText(3, row).Trim());
+		if (value.empty())
+			continue;
+		auto it = std::find(m_cond_use.begin(), m_cond_use.end(), value);
+		if (it == m_cond_use.end())
+			m_cond_use.insert(m_cond_use.begin(), value);
+		else {
+			m_cond_use.erase(it);
+			m_cond_use.insert(m_cond_use.begin(), value);
+		}
+		if (m_cond_use.size() > INITIAL_COND_USE) {
+			m_cond_use.erase(m_cond_use.begin() + INITIAL_COND_USE);
+		}
+	}
+}
+
+void build_column_order(
+        vector<unique_ptr<ColumnInfo>> &out,
+        vector<ColumnInfo*> defs)
+{
+    auto idx = 1; // one based
+    for (auto &def: defs) {
+        def->normalize(); // <!>
+        def->setIndex(idx);
+        out.emplace_back(def);
+        ++idx;
+    }
+}
+
+map<wstring,const ColumnInfo*> build_colinfo(
+        const vector<unique_ptr<ColumnInfo>> &colorder)
+{
+    map<wstring,const ColumnInfo*> result;
+    for (auto &order: colorder) {
+        auto fldnam = order->getColumnName();
+        result[fldnam] = order.get();
+    }
+    return result;
+}
+
+static map<wstring, CondType> build_optionMode(const vector<optionMode> &options)
+{
+	map<wstring, CondType> result;
+	auto idx = 1; // one based
+	for (auto& op : options) {
+		auto& key = op.m_text_type;
+		result[key] = op.m_type;
+	}
+	return result;
+}
+
+std::unique_ptr<std::wstring> CBomDlg::string_query(GroupCond* group)
+{
+	std::wstring item, condition;
+	CondType condType = CondType::UNKNOWN;
+	for (auto row = 1; row <= m_sprSearchCond.GetMaxRows(); row++)
+	{
+		if (m_sprSearchCond.GetCellText(1, row) != _T("1"))
+			continue;
+		item = getPropertieName(&m_Bomtbl, m_sprSearchCond.GetCellText(2, row), m_colorder);
+		condition = m_sprSearchCond.GetCellText(3, row).Trim();
+		auto it = m_optionModeInf.find(std::wstring(m_sprSearchCond.GetCellText(4, row)));
+		if (it != m_optionModeInf.end())
+			condType = it->second;
+		auto str = subCreateCond_String(condType, item.c_str(), condition.c_str());
+		group->appendChild(str);
+	}
+	return group->to_query();
+}
+
+std::unique_ptr<std::wstring> CBomDlg::create_str_query()
+{
+	int idCheck = GetCheckedRadioButton(IDC_RADIO_AND, IDC_RADIO_OR);
+	std::unique_ptr<std::wstring> sqlString;
+	switch (idCheck)
+	{
+	case IDC_RADIO_AND:
+	{
+		auto group = new AndCond();
+		sqlString = string_query(group);
+		if (group)
+			delete group;
+		break;
+	}
+	case IDC_RADIO_OR:
+	{
+		auto group = new OrCond();
+		sqlString = string_query(group);
+		if (group)
+			delete group;
+		break;
+	}
+	break;
+	}
+	return sqlString;
+}
+
+void CBomDlg::init_resize()
+{
+    ResizeInfo rszInfo[] = {
+
+        {IDC_STATIC_KANRENJOUHOU_GROUP,ELASTIC_X},
+        {IDC_TAB_KANRENJOUHOU,ELASTIC_X},
+
+        {IDC_STATIC_PREVIEW_GROUP,MOVE_X},
+        {IDC_STATIC_PREVIEW,MOVE_X},
+        {IDC_PIC_PREVIEW,MOVE_X},
+        {IDC_STATIC_SYM_NAME,MOVE_X},
+        {IDC_BUTTON_PREVIEW_LEFT,MOVE_X},
+        {IDC_BUTTON_PREVIEW_RIGHT,MOVE_X},
+
+        {IDC_STATIC_PARTS_INFOR_GROUP,MOVE_X | ELASTIC_XY},
+        {IDC_STATIC_PARTS_INFOR,MOVE_X},
+        {IDC_SPR_BUHINJOUHOU,MOVE_X | ELASTIC_Y},
+
+        {IDC_BUTTON_EXPAND_MISC, ELASTIC_X},
+        {IDC_BUTTON_EXPAND_ATTR,MOVE_X | ELASTIC_Y},
+
+        {IDC_SPR_LIST_FIND,ELASTIC_XY},
+        {IDC_STATIC_PARTS_SEARCH_GROUP,ELASTIC_XY},
+
+        {IDC_BUTTON_INSERT,MOVE_XY},
+        {IDC_BUTTON_DELETE,MOVE_XY},
+        {IDOK,MOVE_XY},
+
+    };
+    initResizeInfo(
+            rszInfo, ARRAY_SIZE(rszInfo),
+            RESIZE_RESTRICT_MIN_X | RESIZE_RESTRICT_MIN_Y);
+}
+
+void CBomDlg::initSpr()
+{
+	vector<ColumnInfo*> defs{
+		new SpColumn_TermN {L"bompin",L"端子数"},
+		new SpColumn_Acsry {L"bomacsflg",L"付属品"},
+	};
+	getColorderFromIni(L"BOM", defs);
+	build_column_order(m_colorder, defs);
+
+	CheckRadioButton(IDC_RADIO_AND, IDC_RADIO_OR, IDC_RADIO_AND);
+    m_colinf = build_colinfo(m_colorder);
+	m_optionModeInf = build_optionMode(optionModeInf);
+
+	setupSearchResultSpr(m_colorder,m_colinf);
+	setupSearchCondSpr();
+	setupDenkiBomMasterDatabase();
+	setupSprAttr(&m_sprAttr);
+	reflectSprResultToAttr();
+}
+void CBomDlg::reflectSprResultToAttr()
+{
+	SS_CELLCOORD cellActive;
+	m_sprSearchResult.GetActiveCell(&cellActive.Col, &cellActive.Row);
+	if (cellActive.Row > 0)
+	{
+		for (auto col = 1; col < m_sprSearchResult.GetMaxCols(); col++)
+		{
+			m_sprSearchResult.SetCol(col);
+			m_sprSearchResult.SetRow(cellActive.Row);
+			DataCell cell = getDataCell(cellActive.Row, col, &m_sprSearchResult);
+			setDataCell(cell, col, 1, &m_sprAttr);
+		}
+	}
+}
+
+void CBomDlg::adjustTabRect()
+{
+	auto pTab = (CTabCtrl*)GetDlgItem(IDC_TAB_KANRENJOUHOU);
+    if (! pTab) { return; }
+	CRect rc;
+	pTab->GetWindowRect(&rc);
+	ScreenToClient(&rc);
+	pTab->AdjustRect(FALSE, &rc);
+	for (auto& page : m_relateInfor_pages)
+	{
+		CRect rcPage;
+		page->GetWindowRect(&rcPage);
+		page->MoveWindow(rc.left, rc.top, rc.Width(), rc.Height(), TRUE);
+	}
+}
+
+void CBomDlg::initPage()
+{
+	vector<TABPAGE_CREATE> tabs {
+			{ new CRelateInfoPage1(&m_Pintbl,this), _T("PIN"), IDD_DLG_RELATE_INFO_PAGE1},
+			{ new CRelateInfoPage2(&m_AcsryTbl,this), _T("付属品"), IDD_DLG_RELATE_INFO_PAGE2},
+	};
+	auto pTab = (CTabCtrl*)GetDlgItem(IDC_TAB_KANRENJOUHOU);
+	for (auto i = 0; i < (int)tabs.size(); i++) {
+		pTab->InsertItem(i, tabs[i].tabName);
+		m_relateInfor_pages.push_back(unique_ptr<CRelateInfoPageDlg>(tabs[i].pDlg));
+		m_relateInfor_pages[i]->Create(tabs[i].pageID, this);
+	}
+    adjustTabRect();
+	m_page_index = 0;
+	pTab->SetCurSel(m_page_index);
+	changePage(m_page_index);
+}
+
+void CBomDlg::OnSelChgTab(NMHDR* pNMHDR, LRESULT* pResult)
+{
+	auto pTab = (CTabCtrl*)GetDlgItem(IDC_TAB_KANRENJOUHOU);
+	m_page_index = pTab->GetCurSel();
+	if (m_backup) {
+		if (!m_backup->confirmRelateChg()) {
+			pTab->SetCurSel(m_backup->getLastPageSel());
+			return;
+		}
+		m_backup->setLastPageSel(pTab->GetCurSel());
+		m_backup->resetInfoRelate(m_relateInfor_pages[m_page_index]->getSpreadSheet());
+	}
+	setupInforPageFromResultSpr();
+	changePage(m_page_index);
+	*pResult = 0;
+}
+
+bool CBomDlg::setupDenkiBomMasterDatabase()
+{
+	m_db = unique_ptr<DenkiBomMasterDatabase>(new DenkiBomMasterDatabase());
+	if (!m_db->Open(m_connect_text.c_str())) {
+		m_db.reset();
+		return false;
+	}
+	if (! m_db->GetBomTable(m_Bomtbl))
+	{
+		m_db->Close();
+		m_db.reset();
+		return false;
+	}
+	if (!m_db->GetPinTable(m_Pintbl))
+	{
+		m_db->Close();
+		m_db.reset();
+		return false;
+	}
+	if (!m_db->GetAcsryTable(m_AcsryTbl))
+	{
+		m_db->Close();
+		m_db.reset();
+		return false;
+	}
+	return true;
+}
+
+void CBomDlg::changePage(int newPage)
+{
+	for (auto i = 0; i < (int)m_relateInfor_pages.size(); i++)
+		m_relateInfor_pages[i]->ShowWindow(i == newPage ? SW_SHOW : SW_HIDE);
+}
+
+bool CBomDlg::find()
+{
+	if (!isDBOpen())
+		return false;
+	setConditons();
+	setupDefaultSearchResultSpr();
+	m_fuzokuHins = getFuzokuHins();
+	m_relateInfor_pages[1]->setFuzokuHins(m_fuzokuHins);
+	SetSpreadRow spr_setter(&m_sprSearchResult, INITIAL_ROW_CAPACITY);
+	std::unique_ptr<std::wstring> sqlString = create_str_query();
+	if (each_db_record(&m_Bomtbl, m_colinf, CT2A(sqlString->c_str()), spr_setter))
+	{
+		auto rowN = spr_setter.ActualRowNum();
+		m_sprSearchResult.SetMaxRows(rowN);
+        updateResultRowNumStatic(rowN);
+		setupInforPageFromResultSpr();
+		reflectSprResultToAttr();
+		return true;
+	}
+	else {
+		m_sprSearchResult.SetMaxRows(0);
+        updateResultRowNumStatic(0);
+		reflectSprResultToAttr();
+		MessageBox(_T("指示された検索では、検索データがありません。"), _T("部品マスタ メンテナンス"));
+	}
+	return false;
+}
+
+void CBomDlg::OnBtnFind()
+{
+	find();
+}
+
+void CBomDlg::OnBtnFindAddLine()
+{
+	m_sprSearchCond.SetMaxRows(m_sprSearchCond.GetMaxRows() + 1);
+	setDataRowSearchCondSpr(m_sprSearchCond.GetMaxRows());
+}
+
+void CBomDlg::OnBtnDeleteRows()
+{
+	for (auto row = 1; row <= m_sprSearchCond.GetMaxRows(); row++)
+	{
+		CString check = m_sprSearchCond.GetCellText(1, row);
+		if (check == _T("1")) {
+			m_sprSearchCond.DelRow(row);
+			m_sprSearchCond.SetMaxRows(m_sprSearchCond.GetMaxRows() - 1);
+			row--;
+		}
+	}
+}
+
+void CBomDlg::OnBtnExpandMisc()
+{
+	/// TODO: implement later
+}
+
+void CBomDlg::OnBtnExpandAttr()
+{
+	/// TODO: implement later
+}
+
+void CBomDlg::OnBtnPreviewLeft()
+{
+	/// TODO: implement later
+}
+
+void CBomDlg::OnBtnPreviewRight()
+{	
+	/// TODO: implement later
+}
+
+void CBomDlg::updateSelectedRowHilight(
+        DenkiSpreadSheet *spr,set<SS_COORD> &currRows)
+{
+    auto newRows = getActiveRows(spr);
+    const long cell_style = SS_TEXT_CENTER | SS_TEXT_VCENTER | SS_TEXT_WORDWRAP;
+    const long header_style = cell_style | SS_TEXT_SHADOW; 
+    auto unsel_rows = diff(currRows,newRows);
+    spr->SetCol(0);
+    for (auto r: unsel_rows) {
+        spr->SetRow(r);
+        spr->SetTypeStaticText(header_style);
+    }
+    for (auto r: newRows) {
+        spr->SetRow(r);
+        spr->SetTypeStaticText(cell_style);
+        spr->SetColor(0,r,RGBCOLOR_BLACK,RGBCOLOR_WHITE);
+    }
+    currRows = newRows;
+}
+
+void CBomDlg::updateSelectedRowHilight()
+{
+	updateSelectedRowHilight(&m_sprSearchResult, m_activeRowsSprResult);
+	updateSelectedRowHilight(&m_sprAttr, m_activeRowsSprAttr);
+}
+
+void CBomDlg::OnSelChangeSpread()
+{
+    updateSelectedRowHilight();
+    auto rows = getActiveRows(&m_sprSearchResult);
+	if (1 < rows.size()) {
+		m_relateInfor_pages[m_page_index]->resetRelateInfor();
+    } else {
+		m_relateInfor_pages[m_page_index]->displayRelateInfor();
+    }
+}
+
+LRESULT CBomDlg::OnKeyDownSpread(WPARAM wParam, LPARAM lParam)
+{
+	WORD wKeyCode = LOWORD(lParam);
+	if (wParam == IDC_SPR_LIST_FIND) {
+		updateSelectedRowHilight();
+		SS_CELLCOORD CellActive;
+		m_sprSearchResult.GetActiveCell(&CellActive.Col, &CellActive.Row);
+		if (VK_DOWN == wKeyCode) {
+			if (CellActive.Row < m_sprSearchResult.GetMaxRows()) {
+				CellActive.Row += 1;
+            }
+			setupInforPageFromResultSpr(CellActive.Row);
+		}
+		else if (VK_UP == wKeyCode) {
+			if (CellActive.Row > 1) {
+				CellActive.Row -= 1;
+            }
+			setupInforPageFromResultSpr(CellActive.Row);
+		}
+	}
+	return 0L;
+}
+
+LRESULT CBomDlg::OnComboSelChangeSpread(WPARAM wParam, LPARAM lParam)
+{
+	if (IDC_SPR_FIND == wParam) {
+		const SS_CELLCOORD* const pCellCoord = reinterpret_cast<const SS_CELLCOORD*>(lParam);
+		SS_COORD const ColChanged = pCellCoord->Col;
+		SS_COORD const RowChanged = pCellCoord->Row;
+		m_sprSearchCond.SetCol(ColChanged);
+		m_sprSearchCond.SetRow(0);
+		std::wstring header(m_sprSearchCond.GetText());
+		if (0 != lstrcmpi(header.c_str(), STR_OPTION))
+			return FALSE;
+		m_sprSearchCond.SetRow(RowChanged);
+		std::wstring value(m_sprSearchCond.GetText());
+		auto it = m_optionModeInf.find(value);
+		if (it == m_optionModeInf.end())
+			return FALSE;
+		m_sprSearchCond.SetCol(3);
+		auto cond = subCreateCond_String(it->second, L"", L"");
+		if (!cond->hasValue()) {
+			if (!m_sprSearchCond.GetLock()) {
+				m_sprSearchCond.SetBackColor(COLOR_GRAY);
+				m_sprSearchCond.SetLock(true);
+			}
+		}
+		else {
+			if (m_sprSearchCond.GetLock()) {
+				m_sprSearchCond.SetBackColor(RGBCOLOR_WHITE);
+				m_sprSearchCond.SetLock(false);
+			}
+		}
+	}
+	return LRESULT();
+}
+
+LRESULT CBomDlg::OnComboClickSpread(WPARAM wParam, LPARAM lParam)
+{
+	if (IDC_SPR_FIND == wParam) {
+		const SS_CELLCOORD* const pCellCoord = reinterpret_cast<const SS_CELLCOORD*>(lParam);
+		SS_COORD const ColChanged = pCellCoord->Col;
+		SS_COORD const RowChanged = pCellCoord->Row;
+		m_sprSearchCond.SetCol(ColChanged);
+		m_sprSearchCond.SetRow(0);
+		std::wstring header(m_sprSearchCond.GetText());
+		if (0 != lstrcmpi(header.c_str(), STR_CONDITION))
+			return FALSE;
+		m_sprSearchCond.SetRow(RowChanged);
+		std::wstring lstString = join(m_cond_use,L"\t");
+		m_sprSearchCond.SetComboBoxListString(3, RowChanged, lstString.c_str());
+	}
+
+	return LRESULT();
+}
+
+void CBomDlg::updateResultRowNumStatic(int n)
+{
+    CString txt;
+    txt.Format(_T("部品検索結果リスト (%d 件)"), n);
+    SetDlgItemText(IDC_STATIC_PARTS_SEARCH, txt);
+}
+
+void CBomDlg::updateRelatedResultRowNumStatic(int n)
+{
+    CString txt;
+    txt.Format(_T("関連情報リスト (%d 件)"), n);
+    SetDlgItemText(IDC_STATIC_KANRENJOUHOU, txt);
+}
+
+std::set<std::wstring> CBomDlg::getFuzokuHins()
+{
+	std::set<std::wstring> fuzokuHins;
+	DenkiBomMasterRecordset recset;
+	CString query;
+	query.Format(_T("%s = 2"), ACSRY_HEADER);
+	if (m_Bomtbl.Select(recset, query) && !recset.IsEOF()) {
+		recset.MoveFirst();
+		while (!recset.IsEOF()) {
+			DenkiBomMasterRecord rec;
+			if (recset.GetRecord(rec)) {
+				DenkiBomMasterField fld;
+				if (!rec.GetField(fld, 0))
+					continue;
+				LPWSTR _value;
+				fld.GetValue(_value);
+				std::wstring value(_value);
+				fuzokuHins.insert(value);
+				fld.FreeString(_value);
+			}
+			recset.MoveNext();
+		}
+	}
+	return fuzokuHins;
+}
+void CBomDlg::OnPaint()
+{
+    CPaintDC dc(this);
+    adjustWindowGrip(dc);
+    CDialog::OnPaint();
+    for (auto &page: m_relateInfor_pages) {
+        page->OnPaint();
+    }
+}
+
+void CBomDlg::OnSize(UINT nType, int cx, int cy)
+{
+    CDialog::OnSize(nType, cx, cy);
+	adjustComponents(nType, cx, cy);
+    for (auto &page: m_relateInfor_pages) {
+        page->OnSize(nType,cx,cy);
+    }
+    adjustTabRect();
+}
+
+void CBomDlg::OnGetMinMaxInfo(MINMAXINFO FAR* lpMMI)
+{
+	if(! imposeResizeRestriction(lpMMI)) CDialog::OnGetMinMaxInfo(lpMMI);
+}
+
+LRESULT CBomDlg::OnNcHitTest(CPoint point)
+{
+    return mouseCursorIsInGripRect(point) ? HTBOTTOMRIGHT : CDialog::OnNcHitTest(point);
+}
