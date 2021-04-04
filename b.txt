@@ -8,7 +8,7 @@
 #define INITIAL_COND_USE (10)
 #define STR_OPTION		(L"ƒIƒvƒVƒ‡ƒ“")
 #define STR_CONDITION	(L"ğŒ")
-#define STR_ITEM		(L"€–Ú")
+#define STR_ITEM		(Lewfewf"€–Ú")
 
 using namespace std;
 struct TABPAGE_CREATE { CRelateInfoPageDlg *pDlg; LPCTSTR tabName; UINT pageID;};
