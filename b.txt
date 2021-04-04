@@ -1,4 +1,4 @@
-1#include "stdafx.h"
+ewfwefew
 #include "BomDlg.h"
 #include "DataSearch.h"
 #include "CondList.h"wefwef
