@@ -65,44 +65,6 @@ namespace Alfatech.FlexCAD
                 tr.Commit();
             }
         }
-
-        static void setVisibility(ObjectId id,bool visible)
-        {
-            if (id.IsNull)
-                return;
-            using (var tr = id.Database.TransactionManager.StartTransaction()) {
-                var ent = tr.GetObject(id, OpenMode.ForWrite) as Entity;
-                ent.Visible = visible;
-                tr.Commit();
-            }
-        }
-
-        const string SECTION = "InsertConveyor";
-
-        static void open_section(Action<BApp.IConfigurationSection> action)
-        {
-            var mgr = BApp.Application.UserConfigurationManager;
-            using(var prof = mgr.OpenCurrentProfile()) {
-                if (! prof.ContainsSubsection(SECTION)) {
-                    prof.CreateSubsection(SECTION);
-                }
-                var sect = prof.OpenSubsection(SECTION);
-                action(sect);
-            }
-        }
-
-        public static string loadHeight()
-        {
-            string val = null;
-            open_section(sect => val = (string)sect.ReadProperty("Height",""));
-            return val;
-        }
-
-        public static void saveHeight(string h)
-        {
-            open_section(sect => sect.WriteProperty("Height",h));
-        }
-
         // returns: bool(keep going?)
         static bool _Cmd()
         {
@@ -119,7 +81,7 @@ namespace Alfatech.FlexCAD
             ObjectId convID;
             try {
                 convID = InsertComponent.Insert(path,pos);
-                setVisibility(convID,false);
+                EntityUntil.SetVisibility(convID,false);
             } catch (ArgumentNullException) {
                 showMsg($"{conv.ShortName} のパスが空です");
                 return true;
@@ -147,7 +109,7 @@ namespace Alfatech.FlexCAD
             applyMatrix(convID,mtx);
             saveHeight(h.ToString());
             drg_conv.SaveToComponent(convID);
-            setVisibility(convID,true);
+            EntityUntil.SetVisibility(convID,true);
             var anchor = anchor_p==null ? Anchor.End : anchor_p.Value;
             continuousInsert(drg_conv,convID,anchor);
             return true;
